@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sağlık Tarama</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1d2430">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--ink:#1d2430;--mut:#6b7280;--acc:#1f6feb;--ok:#1a7f37;--warn:#b54708;--bad:#c62828}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:#1d2430;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:5}
+header h1{font-size:18px;margin:0;flex:1}
+header button{background:#334155;color:#fff;border:0;padding:8px 12px;border-radius:8px;font-size:15px}
+main{max-width:900px;margin:0 auto;padding:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+.card{background:var(--card);border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin-bottom:12px}
+.tile{cursor:pointer;border:2px solid transparent;margin:0}
+.tile:hover{border-color:var(--acc)}
+.tile b{display:block;margin-bottom:4px}
+.tile small{color:var(--mut)}
+h2{font-size:17px;margin:18px 0 8px}
+.b{background:var(--acc);color:#fff;border:0;padding:12px 18px;border-radius:10px;font-size:16px;margin:4px;cursor:pointer}
+.b.g{background:#475569}.b.ok{background:var(--ok)}.b.r{background:var(--bad)}
+.b:disabled{opacity:.5}
+.big{font-size:24px;padding:22px 30px;min-width:220px}
+input,select{padding:8px;font-size:16px;border:1px solid #cbd5e1;border-radius:8px;margin:4px 0}
+label{display:block;margin:6px 0}
+.mut{color:var(--mut);font-size:14px}
+.res{background:#eef6ff;border-left:4px solid var(--acc);padding:10px;border-radius:6px;margin:10px 0}
+.warn{background:#fff4e5;border-left-color:var(--warn)}
+.center{text-align:center}
+canvas{max-width:100%;touch-action:none}
+table{border-collapse:collapse;width:100%;font-size:14px}
+td,th{border-bottom:1px solid #e5e7eb;padding:6px;text-align:left}
+.stage{min-height:200px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.arrows{text-align:center}.arrows button{width:70px;height:70px;font-size:30px;padding:0}
+#rt{width:100%;height:260px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:26px;color:#fff;user-select:none;cursor:pointer;text-align:center}
+.clk{font-size:56px;font-weight:700;font-variant-numeric:tabular-nums}
+@media print{header,button,.b,select,input{display:none!important}body{background:#fff}.card{box-shadow:none;border:1px solid #ddd}}
+</style>
+</head>
+<body>
+<header><h1 id="ttl">Sağlık Tarama</h1><button onclick="home()">Ana Menü</button></header>
+<main id="app"></main>
+<script>
+// ================= TEMEL =================
+const $=s=>document.querySelector(s);
+const app=$('#app');
+let cleanup=[],alive=0;
+function token(){const m=alive;return()=>m!==alive}
+function clearRun(){cleanup.forEach(f=>{try{f()}catch(e){}});cleanup=[];alive++}
+function view(t,h){clearRun();$('#ttl').textContent=t;app.innerHTML=h;window.scrollTo(0,0)}
+const store={get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
+let S=store.get('st_set',{});
+const saveS=()=>store.set('st_set',S);
+function addResult(key,name,value,unit,summary){const r=store.get('st_res',[]);r.push({key,name,value,unit,summary,date:new Date().toISOString()});store.set('st_res',r)}
+const box=(h,w)=>`<div class="res${w?' warn':''}">${h}</div>`;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const pxmm=()=>S.pxmm||3.78;
+const med=a=>{const b=[...a].sort((x,y)=>x-y),m=b.length>>1;return b.length?(b.length%2?b[m]:(b[m-1]+b[m])/2):0};
+const mean=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0;
+const r1=v=>Math.round(v*10)/10;
+function setupCanvas(cv,w,h){const d=window.devicePixelRatio||1;cv.width=Math.round(w*d);cv.height=Math.round(h*d);cv.style.width=w+'px';cv.style.height=h+'px';const c=cv.getContext('2d');c.setTransform(d,0,0,d,0,0);return c}
+function needCal(){return S.pxmm?'':box('Ekran kalibrasyonu yapılmamış, boyutlar yanlış çıkar. <button class="b g" onclick="T.kalib()">Kalibrasyon yap</button>',1)}
+function eyeSel(id){return `<label>Göz <select id="${id}"><option>Sağ göz</option><option>Sol göz</option><option>İki göz</option></select></label><p class="mut">Tek göz test ederken diğerini avucunla kapat (bastırmadan). Gözlük/lens kullanıyorsan tak.</p>`}
+function handSel(id){return `<label>El <select id="${id}"><option>Sağ el</option><option>Sol el</option></select></label>`}
+
+// ================= SES =================
+let AC=null;
+function ac(){if(!AC){AC=new(window.AudioContext||window.webkitAudioContext)();
+// Bluetooth kulaklık uyumasın diye duyulmayan sürekli sinyal
+const ko=AC.createOscillator(),kg=AC.createGain();ko.frequency.value=30;kg.gain.value=0.0003;ko.connect(kg);kg.connect(AC.destination);ko.start()}
+if(AC.state==='suspended')AC.resume();return AC}
+function tone(f,dur,db,pan=0,delay=0){const c=ac(),o=c.createOscillator(),g=c.createGain();o.frequency.value=f;const a=Math.pow(10,db/20),t=c.currentTime+0.03+delay,rp=Math.min(0.03,dur/4);
+g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(a,t+rp);g.gain.setValueAtTime(a,t+dur-rp);g.gain.linearRampToValueAtTime(0,t+dur);o.connect(g);
+if(c.createStereoPanner){const p=c.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(c.destination)}else g.connect(c.destination);o.start(t);o.stop(t+dur+0.05)}
+const beep=(f=880,d=0.08)=>tone(f,d,-12);
+function noiseNode(){const c=ac(),b=c.createBuffer(1,c.sampleRate*2,c.sampleRate),d=b.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+const s=c.createBufferSource();s.buffer=b;s.loop=true;const lp=c.createBiquadFilter();lp.type='lowpass';lp.frequency.value=3500;const g=c.createGain();g.gain.value=0;s.connect(lp);lp.connect(g);g.connect(c.destination);s.start();return{g,stop(){try{s.stop()}catch(e){}}}}
+function speak(txt){return new Promise(res=>{const u=new SpeechSynthesisUtterance(txt);u.lang='tr-TR';const v=speechSynthesis.getVoices().find(v=>(v.lang||'').toLowerCase().startsWith('tr'));if(v)u.voice=v;u.rate=0.9;u.onend=res;u.onerror=res;speechSynthesis.speak(u);setTimeout(res,8000)})}
+if('speechSynthesis' in window)speechSynthesis.getVoices();
+async function mic(){const s=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});cleanup.push(()=>s.getTracks().forEach(t=>t.stop()));const c=ac(),src=c.createMediaStreamSource(s),an=c.createAnalyser();an.fftSize=1024;src.connect(an);return an}
+function rms(an,buf){an.getFloatTimeDomainData(buf);let s=0;for(let i=0;i<buf.length;i++)s+=buf[i]*buf[i];return Math.sqrt(s/buf.length)}
+
+// ================= GRAFİK =================
+function chart(cv,labels,series,opt={}){const c=cv.getContext('2d'),W=cv.width,H=cv.height,p=44;c.clearRect(0,0,W,H);c.font='12px sans-serif';
+const all=series.flatMap(s=>s.data).filter(v=>v!=null&&isFinite(v));if(!all.length)return;
+let mn=opt.min!=null?opt.min:Math.min(...all),mx=opt.max!=null?opt.max:Math.max(...all);if(mn===mx){mn-=1;mx+=1}
+const X=i=>p+(labels.length<2?(W-2*p)/2:i*(W-2*p)/(labels.length-1)),Y=v=>{let f=(v-mn)/(mx-mn);if(opt.inv)f=1-f;return H-p-f*(H-2*p)};
+c.strokeStyle='#e5e7eb';c.fillStyle='#6b7280';for(let k=0;k<=4;k++){const v=mn+k*(mx-mn)/4,y=Y(v);c.beginPath();c.moveTo(p,y);c.lineTo(W-10,y);c.stroke();c.fillText(r1(v),2,y+4)}
+const st=Math.ceil(labels.length/8);labels.forEach((l,i)=>{if(i%st===0)c.fillText(l,X(i)-14,H-p+18)});
+series.forEach(s=>{c.strokeStyle=s.color;c.fillStyle=s.color;c.lineWidth=2;c.beginPath();let on=false;s.data.forEach((v,i)=>{if(v==null)return;const x=X(i),y=Y(v);on?c.lineTo(x,y):c.moveTo(x,y);on=true});c.stroke();s.data.forEach((v,i)=>{if(v==null)return;c.beginPath();c.arc(X(i),Y(v),4,0,7);c.fill()})});
+series.forEach((s,i)=>{c.fillStyle=s.color;c.fillText('■ '+s.name,p+i*110,14)})}
+
+// ================= MENÜ =================
+const TESTS=[
+{cat:'İşitme',items:[['odyo','Odyometri (sağ/sol)','Kulaklıkla frekans bazlı işitme eşiği'],['din','Gürültüde rakam','Gürültüde konuşma anlama'],['ust','Üst frekans sınırı','Duyabildiğin en tiz ses'],['cin','Çınlama eşleştirme','Kulak çınlamasının frekansı']]},
+{cat:'Görme',items:[['acu','Görme keskinliği (uzak)','E tablosu, 3 m'],['near','Yakın görme','E tablosu, 40 cm'],['renk','Renk görme','Renk körlüğü taraması'],['amsler','Amsler ızgarası','Sarı nokta taraması'],['astig','Astigmatizma','Işınsal kadran'],['kont','Kontrast hassasiyeti','Soluk harfleri görme']]},
+{cat:'Nefes',items:[['tut','Nefes tutma','Maksimum ve BOLT'],['ufle','Üfleme testi (mikrofon)','Üfleme gücü ve süresi'],['sol','Solunum sayısı','Dakikadaki nefes'],['say','Tek nefeste sayma','Akciğer kapasitesi göstergesi']]},
+{cat:'Kalp / Kondisyon',items:[['nabizcam','Nabız (kamera)','Parmağı kameraya koy'],['nabiztap','Nabız (dokunarak)','Nabzına göre ekrana dokun'],['step','3 dk basamak testi','Kondisyon / toparlanma'],['orto','Yatma–ayakta nabız','Ortostatik değişim']]},
+{cat:'Motor / Refleks',items:[['tepki','Tepki süresi','Basit refleks'],['secmeli','Seçmeli tepki','Sağ/sol karar hızı'],['vurus','Parmak vuruş hızı','10 sn, her el'],['spiral','Spiral çizme','El titremesi taraması'],['denge','Tek ayak denge','Kronometre + telefon sensörü']]},
+{cat:'Bilişsel',items:[['span','Rakam dizisi','Kısa süreli hafıza'],['corsi','Kutu dizisi','Görsel hafıza'],['stroop','Stroop','Dikkat ve ketleme'],['trail','İz sürme A/B','İşlem hızı, zihinsel esneklik']]},
+{cat:'Vücut / Kayıt',items:[['vki','Vücut ölçüleri','VKİ, bel/boy, bazal metabolizma'],['manuel','Manuel ölçüm kaydı','Tansiyon, şeker, SpO2, ateş']]},
+{cat:'Ayarlar / Geçmiş',items:[['profil','Profil','Ad, yaş, boy, kilo'],['kalib','Ekran kalibrasyonu','Görme testleri için şart'],['gecmis','Geçmiş ve rapor','Sonuçlar, grafik, yazdır, yedek']]}];
+const T={};
+function home(){view('Sağlık Tarama',`<p class="mut">Tarama amaçlıdır, tanı koymaz. Anormal çıkan sonuç için doktora git.${S.pxmm?'':' <b>Görme testlerinden önce Ekran kalibrasyonu yap.</b>'}</p>`+TESTS.map(c=>`<h2>${c.cat}</h2><div class="grid">${c.items.map(i=>`<div class="card tile" onclick="T.${i[0]}()"><b>${i[1]}</b><small>${i[2]}</small></div>`).join('')}</div>`).join(''))}
+
+// ================= PROFİL / KALİBRASYON =================
+T.profil=()=>{view('Profil',`<div class="card"><label>Ad <input id="p_name" value="${S.name||''}"></label><label>Yaş <input id="p_age" type="number" value="${S.age||''}"></label>
+<label>Cinsiyet <select id="p_sex"><option value="E">Erkek</option><option value="K">Kadın</option></select></label><label>Boy (cm) <input id="p_h" type="number" value="${S.height||''}"></label><label>Kilo (kg) <input id="p_w" type="number" value="${S.weight||''}"></label><button class="b" id="p_save">Kaydet</button></div>`);
+$('#p_sex').value=S.sex||'E';$('#p_save').onclick=()=>{S.name=$('#p_name').value;S.age=+$('#p_age').value||'';S.sex=$('#p_sex').value;S.height=+$('#p_h').value||'';S.weight=+$('#p_w').value||'';saveS();home()}};
+T.kalib=()=>{const w=S.pxmm?S.pxmm*85.6:323;view('Ekran Kalibrasyonu',`<div class="card"><p>Bir banka/kimlik kartını ekrandaki mavi kutunun üstüne koy. Kaydırıcıyla kutuyu kartla birebir aynı genişliğe getir (85,6 mm).</p>
+<div id="kc" style="width:${w}px;height:${w*53.98/85.6}px;background:#93c5fd;border:2px solid #1d4ed8;border-radius:10px;margin:10px 0"></div><input type="range" id="ks" min="150" max="1000" step="0.5" value="${w}" style="width:100%">
+<button class="b" id="kb">Kaydet</button><p class="mut">Tarayıcı yakınlaştırması %100 olsun. Telefon ve bilgisayar için ayrı ayrı yap.</p><div id="kr"></div></div>`);
+const k=$('#kc'),s=$('#ks');s.oninput=()=>{k.style.width=s.value+'px';k.style.height=(s.value*53.98/85.6)+'px'};
+$('#kb').onclick=()=>{S.pxmm=s.value/85.6;saveS();$('#kr').innerHTML=box('Kaydedildi: '+S.pxmm.toFixed(2)+' px/mm')}};
+
+// ================= İŞİTME =================
+T.odyo=()=>{view('Odyometri',`<div class="card"><p>Kulaklık tak, sessiz odaya geç. Cihaz sesini <b>%50 civarına</b> getir ve test boyunca <b>değiştirme</b>. Üçlü bip duyduğun an <b>DUYDUM</b>'a bas (klavyede boşluk da olur). Ses yokken basma.</p>
+<button class="b g" onclick="tone(1000,0.6,-20,1)">Sağ kulak dene</button><button class="b g" onclick="tone(1000,0.6,-20,-1)">Sol kulak dene</button><p class="mut">Sağ deneme sağdan gelmeli, gelmiyorsa kulaklık ters.</p><button class="b" id="os">Teste başla</button></div>
+<div class="card stage" id="ost" style="display:none"><p id="oinf" style="font-size:20px;font-weight:700"></p><button class="b big" id="obtn">DUYDUM</button><p class="mut" id="oprog"></p></div><div id="ores"></div>`);
+const F=[1000,2000,4000,6000,8000,500,250],seq=[];[1,-1].forEach(e=>F.forEach(f=>seq.push([e,f])));
+const res={R:{},L:{}};let pressedAt=-1,fa=0;const press=()=>{pressedAt=performance.now()};$('#obtn').onpointerdown=e=>{e.preventDefault();press()};
+const kh=e=>{if(e.code==='Space'){e.preventDefault();press()}};document.addEventListener('keydown',kh);cleanup.push(()=>document.removeEventListener('keydown',kh));
+$('#os').onclick=async()=>{const dead=token();$('#os').disabled=true;$('#ost').style.display='flex';ac();
+for(let i=0;i<seq.length;i++){const[ear,f]=seq[i];$('#oinf').textContent=(ear>0?'SAĞ':'SOL')+' kulak – '+f+' Hz';$('#oprog').textContent=(i+1)+' / '+seq.length;
+let lvl=-30,last=null,asc={},thr=null,n=0;
+while(thr===null&&n<25){n++;pressedAt=-1;await sleep(1000+Math.random()*2000);if(dead())return;if(pressedAt>0)fa++;pressedAt=-1;
+for(let k=0;k<3;k++)tone(f,0.22,lvl,ear,k*0.4);await sleep(2700);if(dead())return;const heard=pressedAt>0;
+if(heard){if(last===false){asc[lvl]=(asc[lvl]||0)+1;if(asc[lvl]>=2)thr=lvl}lvl=Math.max(lvl-10,-100)}else{if(lvl>=0){thr=1;break}lvl+=5}last=heard}
+if(thr===null)thr=lvl;res[ear>0?'R':'L'][f]=thr}
+$('#ost').style.display='none';
+const Fs=[250,500,1000,2000,4000,6000,8000],v=(e,f)=>res[e][f]>0?0:res[e][f];
+const pta=e=>mean([500,1000,2000,4000].map(f=>v(e,f)));const notes=[];
+Fs.forEach(f=>{if(Math.abs(v('R',f)-v('L',f))>=15)notes.push(`${f} Hz'de iki kulak arası ${Math.abs(v('R',f)-v('L',f))} dB fark`)});
+['R','L'].forEach(e=>{const lo=mean([500,1000].map(f=>v(e,f))),hi=mean([4000,6000].map(f=>v(e,f)));if(hi-lo>=20)notes.push(`${e==='R'?'Sağ':'Sol'} kulakta 4–6 kHz düşüşü (gürültüye bağlı işitme kaybı paterni)`)});
+Fs.forEach(f=>['R','L'].forEach(e=>{if(res[e][f]>0)notes.push(`${e==='R'?'Sağ':'Sol'} ${f} Hz en yüksek seste bile duyulmadı`)}));
+if(fa>3)notes.push(`Ses yokken ${fa} kez basıldı, sonuç güvenilmez, tekrarla`);
+const tbl=`<table><tr><th>Hz</th>${Fs.map(f=>`<th>${f}</th>`).join('')}</tr><tr><td style="color:#c62828">Sağ</td>${Fs.map(f=>`<td>${res.R[f]>0?'—':res.R[f]}</td>`).join('')}</tr><tr><td style="color:#1565c0">Sol</td>${Fs.map(f=>`<td>${res.L[f]>0?'—':res.L[f]}</td>`).join('')}</tr></table>`;
+const sum=`Ortalama eşik Sağ ${r1(pta('R'))} / Sol ${r1(pta('L'))} dBFS`;
+$('#ores').innerHTML=`<div class="card"><b>Odyogram</b> (değer ne kadar eksi ise o kadar iyi duyuyorsun; üst = iyi)<canvas id="ocv" width="700" height="300" style="width:100%"></canvas>${tbl}`+box(sum+'<br>'+(notes.length?'<b>Dikkat:</b><br>• '+notes.join('<br>• ')+'<br>Kulak burun boğaz / odyoloji kontrolü önerilir.':'İki kulak dengeli, belirgin frekans düşüşü yok.')+'<br><span class="mut">Değerler bu cihaz ve ses ayarına göre görecelidir. Aynı kulaklık ve aynı ses seviyesiyle tekrarlarsan takip için anlamlıdır.</span>',notes.length)+'</div>';
+chart($('#ocv'),Fs.map(String),[{name:'Sağ',color:'#c62828',data:Fs.map(f=>v('R',f))},{name:'Sol',color:'#1565c0',data:Fs.map(f=>v('L',f))}],{min:-100,max:0,inv:true});
+addResult('odyo','Odyometri',r1(mean([pta('R'),pta('L')])),'dBFS',sum+(notes.length?' | '+notes.join('; '):''))}};
+
+T.din=()=>{view('Gürültüde Rakam',`<div class="card"><p>Kulaklık tak, ses %50 civarı. Gürültünün içinde 3 rakam okunacak, duyduğunu yaz. Doğru bildikçe gürültü artar. 20 tur.</p><p class="mut" id="dv"></p><button class="b" id="dgo">Başla</button></div>
+<div class="card stage" id="dst" style="display:none"><p id="dinf" style="font-size:20px"></p><input id="dans" inputmode="numeric" maxlength="3" style="font-size:32px;width:150px;text-align:center"><button class="b" id="dok">Tamam</button></div><div id="dres"></div>`);
+if(!('speechSynthesis' in window)){$('#dv').textContent='Bu tarayıcıda konuşma sentezi yok. Chrome kullan.';return}
+setTimeout(()=>{const ok=speechSynthesis.getVoices().some(v=>(v.lang||'').toLowerCase().startsWith('tr'));$('#dv')&&($('#dv').textContent=ok?'Türkçe ses bulundu.':'Türkçe ses bulunamadı; rakamlar başka dilde okunabilir, anlıyorsan sorun yok.')},300);
+$('#dgo').onclick=async()=>{const dead=token();$('#dgo').disabled=true;$('#dst').style.display='flex';const nz=noiseNode();cleanup.push(()=>{nz.stop();speechSynthesis.cancel()});
+let nd=-24;const hist=[];
+for(let i=0;i<20;i++){const dg=[0,1,2].map(()=>Math.floor(Math.random()*10));$('#dinf').textContent=`Tur ${i+1}/20 – dinle...`;$('#dans').value='';$('#dans').disabled=true;
+nz.g.gain.setTargetAtTime(Math.pow(10,nd/20),ac().currentTime,0.05);await sleep(700);await speak(dg.join('. ')+'.');await sleep(300);nz.g.gain.setTargetAtTime(0,ac().currentTime,0.05);if(dead())return;
+$('#dinf').textContent='Duyduğun rakamları yaz';$('#dans').disabled=false;$('#dans').focus();
+const a=await new Promise(r=>{$('#dok').onclick=()=>r($('#dans').value);$('#dans').onkeydown=e=>{if(e.key==='Enter')r($('#dans').value)}});if(dead())return;
+hist.push(nd);const ok=a.replace(/\D/g,'')===dg.join('');nd=Math.max(-50,Math.min(0,nd+(ok?2:-2)))}
+nz.stop();$('#dst').style.display='none';const sc=r1(mean(hist.slice(-10)));
+$('#dres').innerHTML=box(`Gürültü eşiğin: <b>${sc} dB</b> (yüksek = iyi, yani daha gürültülü ortamda anlayabiliyorsun).<br><span class="mut">Aynı cihaz ve ses ayarıyla tekrar et; zamanla düşüş, gürültüde anlama zorluğunun artması demek.</span>`);
+addResult('din','Gürültüde rakam',sc,'dB','Gürültü eşiği '+sc+' dB')}};
+
+T.ust=()=>{view('Üst Frekans Sınırı',`<div class="card"><p>Kulaklık şart (laptop hoparlörü tiz sesi veremez). Ses %50. Ton giderek incelecek, artık duymadığın an butona bas.</p><button class="b" id="ugo">Başla</button></div>
+<div class="card stage" id="ust" style="display:none"><div id="uf" class="clk"></div><button class="b big r" id="ustop">ARTIK DUYMUYORUM</button></div><div id="ures"></div>`);
+$('#ugo').onclick=async()=>{const dead=token();$('#ugo').disabled=true;$('#ust').style.display='flex';let stp=false;$('#ustop').onclick=()=>stp=true;let last=null,f;
+for(f=8000;f<=20000;f+=500){if(stp)break;$('#uf').textContent=f+' Hz';tone(f,0.9,-20,0);await sleep(1300);if(dead())return;if(stp)break;last=f}
+$('#ust').style.display='none';$('#ugo').disabled=false;
+if(last===null){$('#ures').innerHTML=box('8000 Hz bile duyulmadı. Ses seviyesini/kulaklığı kontrol et; doğruysa KBB kontrolü önerilir.',1);addResult('ust','Üst frekans sınırı',8000,'Hz','<8000 Hz');return}
+const msg=last>=17000?'Genç kulak seviyesi (~30 yaş altı tipik).':last>=15000?'~30–40 yaş tipik aralık.':last>=12000?'~40–55 yaş tipik aralık; gürültülü ortamda çalışıyorsan takip et.':'Tiz seslerde belirgin kayıp. Yaşın gençse gürültü hasarı olabilir, odyometri yaptır.';
+$('#ures').innerHTML=box(`Duyduğun en tiz ses: <b>${last} Hz</b><br>${msg}`,last<12000);addResult('ust','Üst frekans sınırı',last,'Hz',last+' Hz')}};
+
+T.cin=()=>{view('Çınlama Eşleştirme',`<div class="card"><p>Kulağındaki çınlamaya en çok benzeyen tonu bul. Önce sesi kıs, sonra frekansı kaydır.</p><button class="b" id="cplay">Çal / Durdur</button>
+<label>Frekans: <b id="cfv"></b><input type="range" id="cf" min="0" max="1000" value="600" style="width:100%"></label><label>Ses<input type="range" id="cv" min="-70" max="-10" value="-45" style="width:100%"></label>
+<label>Hangi kulak <select id="ce"><option>İki kulak</option><option>Sağ</option><option>Sol</option></select></label><button class="b ok" id="csave">Bu frekansı kaydet</button><div id="cres"></div></div>`);
+let o=null,g=null;const fr=()=>Math.round(250*Math.pow(48,$('#cf').value/1000));const upd=()=>{$('#cfv').textContent=fr()+' Hz';if(o){o.frequency.value=fr();g.gain.value=Math.pow(10,$('#cv').value/20)}};upd();
+const stop=()=>{if(o){try{o.stop()}catch(e){}o=null}};cleanup.push(stop);
+$('#cplay').onclick=()=>{if(o){stop();return}const c=ac();o=c.createOscillator();g=c.createGain();o.connect(g);g.connect(c.destination);upd();o.start()};
+$('#cf').oninput=upd;$('#cv').oninput=upd;$('#csave').onclick=()=>{const f=fr(),e=$('#ce').value;addResult('cin','Çınlama frekansı',f,'Hz',e+': '+f+' Hz');$('#cres').innerHTML=box('Kaydedildi: '+e+' – '+f+' Hz. Çınlama yeni başladıysa, tek taraflıysa ya da işitme kaybıyla birlikteyse KBB kontrolü önerilir.')}};
+
+// ================= GÖRME =================
+function drawE(cv,h,d){const W=Math.max(h*1.6,60),c=setupCanvas(cv,W,W);c.fillStyle='#fff';c.fillRect(0,0,W,W);c.save();c.translate(W/2,W/2);c.rotate(d*Math.PI/2);const u=h/5;c.fillStyle='#000';c.translate(-h/2,-h/2);
+c.fillRect(0,0,u,h);c.fillRect(0,0,h,u);c.fillRect(0,2*u,h,u);c.fillRect(0,4*u,h,u);c.restore()}
+function acuity(title,defDist,key){view(title,needCal()+`<div class="card" id="aset"><label>Mesafe (cm) <input id="adist" type="number" value="${defDist}"></label>${eyeSel('aeye')}
+<p class="mut">Dönük E harfleri çıkacak. E'nin <b>kollarının (açık tarafının)</b> baktığı yönü seç. Klavyede ok tuşları da çalışır. Emin değilsen tahmin et. Bilgisayarda biri basabilir ya da klavye kullan.</p><button class="b" id="ago">Başla</button></div>
+<div class="card stage" id="ast" style="display:none"><canvas id="acv" style="max-width:none"></canvas><p class="mut" id="ainf"></p><div class="arrows"><div><button class="b" data-d="3">↑</button></div><div><button class="b" data-d="2">←</button><button class="b" data-d="0">→</button></div><div><button class="b" data-d="1">↓</button></div></div></div><div id="ares"></div>`);
+let resolver=null;app.querySelectorAll('[data-d]').forEach(b=>b.onclick=()=>resolver&&resolver(+b.dataset.d));
+const kh=e=>{const m={ArrowUp:3,ArrowRight:0,ArrowDown:1,ArrowLeft:2};if(e.key in m&&resolver){e.preventDefault();resolver(m[e.key])}};document.addEventListener('keydown',kh);cleanup.push(()=>document.removeEventListener('keydown',kh));
+$('#ago').onclick=async()=>{const dead=token();const dist=(+$('#adist').value||defDist)*10,eye=$('#aeye').value;$('#aset').style.display='none';$('#ast').style.display='flex';
+const cv=$('#acv'),maxH=Math.min(window.innerHeight*0.4,app.clientWidth*0.55);const hpx=lm=>dist*Math.tan(5/60*Math.PI/180*Math.pow(10,lm))*pxmm();
+let lm=1.0;while(hpx(lm)>maxH&&lm>-0.3)lm=Math.round((lm-0.1)*10)/10;const start=lm;let best=null,limit=false;
+for(;lm>=-0.3-1e-9;lm=Math.round((lm-0.1)*10)/10){const h=hpx(lm);if(h<5){limit=true;break}let ok=0,k;
+for(k=0;k<5;k++){const d=Math.floor(Math.random()*4);drawE(cv,h,d);$('#ainf').textContent=`Seviye ${lm.toFixed(1)} logMAR – ${k+1}/5`;const ans=await new Promise(r=>resolver=r);resolver=null;if(dead())return;if(ans===d)ok++;if(ok>=3||(k+1-ok)>=3)break}
+if(ok>=3)best=lm;else break}
+$('#ast').style.display='none';
+if(best===null){const s=`${eye}: en büyük boyut (logMAR ${start.toFixed(1)}) okunamadı`;$('#ares').innerHTML=box(s+'. <b>Göz doktoruna git.</b>',1);addResult(key+'|'+eye,title+' ('+eye+')',0,'',s);return}
+const dec=Math.pow(10,-best),sn='6/'+r1(6*Math.pow(10,best));const msg=dec>=0.8?'Normal sınırlarda.':dec>=0.5?'Hafif azalma. Göz muayenesi / gözlük kontrolü önerilir.':'Belirgin azalma. <b>Göz doktoruna git.</b>';
+const s=`${eye}: ${dec.toFixed(2)} (Snellen ${sn}, logMAR ${best.toFixed(1)})`;
+$('#ares').innerHTML=box(`<b>${s}</b><br>${msg}${limit?'<br><span class="mut">Ekran daha küçüğünü çizemedi; gerçek değerin daha iyi olabilir. Mesafeyi artırıp tekrarla.</span>':''}<br><button class="b g" onclick="T.${key}()">Diğer gözü test et</button>`,dec<0.8);
+addResult(key+'|'+eye,title+' ('+eye+')',Math.round(dec*100)/100,'ondalık',s)}}
+T.acu=()=>acuity('Görme Keskinliği (Uzak)',300,'acu');
+T.near=()=>acuity('Yakın Görme',40,'near');
+
+const hsl=(h,s,l)=>`hsl(${h},${s}%,${l}%)`;
+function drawPlate(cv,digit,fg,bg){const W=300,c=setupCanvas(cv,W,W);c.fillStyle='#fff';c.fillRect(0,0,W,W);
+const m=document.createElement('canvas');m.width=W;m.height=W;const mc=m.getContext('2d');mc.fillStyle='#000';mc.fillRect(0,0,W,W);mc.fillStyle='#fff';mc.font='bold 200px sans-serif';mc.textAlign='center';mc.textBaseline='middle';mc.fillText(digit,W/2,W/2+10);
+const md=mc.getImageData(0,0,W,W).data,dots=[],R=W/2-4;
+for(let i=0;i<5000&&dots.length<1200;i++){const r=3+Math.random()*6,a=Math.random()*Math.PI*2,q=Math.sqrt(Math.random())*(R-r),x=W/2+q*Math.cos(a),y=W/2+q*Math.sin(a);
+let ok=true;for(const d of dots){const dx=d[0]-x,dy=d[1]-y,rr=d[2]+r+1;if(dx*dx+dy*dy<rr*rr){ok=false;break}}if(!ok)continue;dots.push([x,y,r]);
+const p=md[((y|0)*W+(x|0))*4]>128?fg:bg;c.fillStyle=hsl(p[0]+(Math.random()*10-5),p[1],p[2]+(Math.random()*16-8));c.beginPath();c.arc(x,y,r,0,7);c.fill()}}
+T.renk=()=>{view('Renk Görme',`<div class="card"><p>Gece ışığı / mavi ışık filtresini kapat, parlaklığı yüksek yap. Her levhada noktalardan oluşan bir rakam var. Gördüğün rakamı seç, göremiyorsan "Göremiyorum".</p><button class="b" id="rgo">Başla</button></div>
+<div class="card stage" id="rst" style="display:none"><canvas id="rcv"></canvas><p class="mut" id="rinf"></p><div id="rb"></div></div><div id="rres"></div>`);
+const P=[['k',[20,85,45],[210,10,78]],['rg',[15,60,58],[85,60,52]],['rg',[15,50,58],[85,50,52]],['rg',[15,42,58],[85,42,52]],['rg',[10,36,58],[80,36,54]],['rg',[10,30,58],[80,30,54]],['rg',[5,26,57],[75,26,55]],['tr',[235,45,64],[150,40,60]],['tr',[235,35,64],[150,32,60]],['k',[0,0,30],[0,0,78]]];
+const D=[2,3,4,5,6,8,9];let resolver=null;$('#rb').innerHTML=D.map(d=>`<button class="b" data-n="${d}">${d}</button>`).join('')+'<button class="b g" data-n="0">Göremiyorum</button>';
+app.querySelectorAll('[data-n]').forEach(b=>b.onclick=()=>resolver&&resolver(+b.dataset.n));
+$('#rgo').onclick=async()=>{const dead=token();$('#rgo').parentNode.style.display='none';$('#rst').style.display='flex';const sc={k:0,rg:0,tr:0};
+for(let i=0;i<P.length;i++){const d=D[Math.floor(Math.random()*D.length)];drawPlate($('#rcv'),d,P[i][1],P[i][2]);$('#rinf').textContent=`Levha ${i+1}/${P.length}`;const a=await new Promise(r=>resolver=r);resolver=null;if(dead())return;if(a===d)sc[P[i][0]]++}
+$('#rst').style.display='none';let msg,w=false;
+if(sc.k<2){msg='Kontrol levhaları yanlış — test geçersiz, ekran ayarlarını kontrol edip tekrarla.';w=true}
+else{const rg=sc.rg>=5?'Kırmızı-yeşil: normal.':sc.rg>=3?'Kırmızı-yeşil: sınırda, şüpheli.':'Kırmızı-yeşil: renk görme zayıflığı olası.';const tr=sc.tr===2?'Mavi-sarı: normal.':sc.tr===1?'Mavi-sarı: sınırda.':'Mavi-sarı: zayıflık olası.';w=sc.rg<5||sc.tr<2;msg=rg+'<br>'+tr+(w?'<br>Kesin sonuç için göz doktorunda Ishihara testi yaptır.':'')}
+const s=`Kırmızı-yeşil ${sc.rg}/6, mavi-sarı ${sc.tr}/2, kontrol ${sc.k}/2`;$('#rres').innerHTML=box('<b>'+s+'</b><br>'+msg,w);addResult('renk','Renk görme',sc.rg,'/6',s)}};
+
+T.amsler=()=>{view('Amsler Izgarası',needCal()+`<div class="card">${eyeSel('meye')}<p>Ekranı <b id="mdist">30</b> cm uzakta tut. Açık gözünle <b>sadece ortadaki siyah noktaya</b> bak. Çizgilerin eğri, dalgalı, bulanık ya da eksik göründüğü yerlere dokun.</p></div>
+<div class="card center"><canvas id="mcv" style="max-width:none"></canvas><br><button class="b ok" id="mok">Hepsi düzgün</button><button class="b r" id="mbad">İşaretledim, bitir</button><button class="b g" id="mclr">Temizle</button></div><div id="mres"></div>`);
+const cv=$('#mcv');let sz=100*pxmm(),sc=1;const av=app.clientWidth-40;if(sz>av){sc=av/sz;sz=av}$('#mdist').textContent=Math.round(30*sc);let marks=[];
+const draw=()=>{const c=setupCanvas(cv,sz,sz);c.fillStyle='#fff';c.fillRect(0,0,sz,sz);c.strokeStyle='#000';c.lineWidth=1;for(let i=0;i<=20;i++){const p=Math.round(i*sz/20)+0.5;c.beginPath();c.moveTo(p,0);c.lineTo(p,sz);c.moveTo(0,p);c.lineTo(sz,p);c.stroke()}
+c.fillStyle='#000';c.beginPath();c.arc(sz/2,sz/2,Math.max(3,sz/70),0,7);c.fill();c.fillStyle='rgba(220,0,0,.55)';marks.forEach(m=>{c.beginPath();c.arc(m[0],m[1],sz/30,0,7);c.fill()})};draw();
+cv.onpointerdown=e=>{const r=cv.getBoundingClientRect();marks.push([e.clientX-r.left,e.clientY-r.top]);draw()};$('#mclr').onclick=()=>{marks=[];draw()};
+const fin=bad=>{const eye=$('#meye').value,n=bad?marks.length:0;const s=n?`${eye}: ${n} bölgede bozulma`:`${eye}: çizgiler düzgün`;
+$('#mres').innerHTML=box('<b>'+s+'</b>'+(n?'<br>Eğri/eksik çizgi sarı nokta (makula) sorununun erken işareti olabilir. <b>Göz doktoruna git.</b>':''),n);addResult('amsler|'+eye,'Amsler ('+eye+')',n,'bölge',s);marks=[];draw()};
+$('#mok').onclick=()=>fin(false);$('#mbad').onclick=()=>fin(true)};
+
+T.astig=()=>{view('Astigmatizma',`<div class="card">${eyeSel('seye')}<p>Ekrana 1–2 m uzaktan bak, kadranın ortasına odaklan. Tüm çizgiler aynı koyulukta ve netlikte mi? Bazı yönler belirgin şekilde daha koyu/net, diğerleri soluk/bulanıksa en koyu yönü seç.</p></div>
+<div class="card center"><canvas id="scv"></canvas><div id="sbtn"></div><button class="b ok" id="seq">Hepsi eşit</button></div><div id="sres"></div>`);
+const W=Math.min(360,app.clientWidth-40),c=setupCanvas($('#scv'),W,W),R=W/2-26;c.fillStyle='#fff';c.fillRect(0,0,W,W);c.strokeStyle='#000';c.lineWidth=2;c.fillStyle='#000';c.font='bold 16px sans-serif';c.textAlign='center';c.textBaseline='middle';
+for(let h=1;h<=12;h++){const a=h*Math.PI/6-Math.PI/2,dx=Math.cos(a),dy=Math.sin(a),px=-dy,py=dx;for(const o of[-5,0,5]){c.beginPath();c.moveTo(W/2+dx*22+px*o,W/2+dy*22+py*o);c.lineTo(W/2+dx*R+px*o,W/2+dy*R+py*o);c.stroke()}c.fillText(h,W/2+dx*(R+14),W/2+dy*(R+14))}
+const pairs=['12–6','1–7','2–8','3–9','4–10','5–11'];$('#sbtn').innerHTML=pairs.map(p=>`<button class="b g" data-p="${p}">${p}</button>`).join('');
+const fin=p=>{const eye=$('#seye').value,s=p?`${eye}: ${p} yönü daha koyu`:`${eye}: tüm çizgiler eşit`;$('#sres').innerHTML=box('<b>'+s+'</b>'+(p?'<br>Astigmatizma olabilir. Göz muayenesi önerilir.':''),!!p);addResult('astig|'+eye,'Astigmatizma ('+eye+')',p?1:0,'',s)};
+app.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>fin(b.dataset.p));$('#seq').onclick=()=>fin(null)};
+
+T.kont=()=>{view('Kontrast Hassasiyeti',needCal()+`<div class="card" id="kset">${eyeSel('keye')}<p>Parlaklık en yüksek, gece ışığı kapalı. 1 m uzaktan bak. Harf giderek soluklaşacak, gördüğün harfi seç. Göremiyorsan tahmin et.</p><button class="b" id="kgo">Başla</button></div>
+<div class="card stage" id="kst" style="display:none"><div id="kl" style="background:#fff;width:100%;text-align:center;font-family:Arial,sans-serif;font-weight:700;line-height:1.1"></div><p class="mut" id="kinf"></p><div id="kb"></div></div><div id="kres"></div>`);
+const L='CDHKNORSVZ';let resolver=null;$('#kb').innerHTML=[...L].map(l=>`<button class="b" data-l="${l}">${l}</button>`).join('');app.querySelectorAll('[data-l]').forEach(b=>b.onclick=()=>resolver&&resolver(b.dataset.l));
+const enc=x=>x<=0.0031308?12.92*x:1.055*Math.pow(x,1/2.4)-0.055;
+$('#kgo').onclick=async()=>{const dead=token(),eye=$('#keye').value;$('#kset').style.display='none';$('#kst').style.display='flex';const fs=Math.min(40*pxmm()/0.72,window.innerHeight*0.3);$('#kl').style.fontSize=fs+'px';
+let best=null,limit=false;for(let i=0;i<=15;i++){const lc=i*0.15,ct=Math.pow(10,-lc),v=Math.round(255*enc(1-ct));if(v>=255){limit=true;break}let ok=0,k;
+for(k=0;k<3;k++){const l=L[Math.floor(Math.random()*L.length)];$('#kl').textContent=l;$('#kl').style.color=`rgb(${v},${v},${v})`;$('#kinf').textContent=`Seviye ${lc.toFixed(2)} – ${k+1}/3`;const a=await new Promise(r=>resolver=r);resolver=null;if(dead())return;if(a===l)ok++;if(ok>=2||k+1-ok>=2)break}
+if(ok>=2)best=lc;else break}
+$('#kst').style.display='none';const b=best===null?0:best;const msg=b>=1.65?'Normal.':b>=1.35?'Hafif azalmış. Takip et.':'Azalmış. Katarakt/glokom gibi sorunların taraması için göz doktoruna git.';
+const s=`${eye}: log CS ${b.toFixed(2)}`;$('#kres').innerHTML=box(`<b>${s}</b><br>${msg}${limit?'<br><span class="mut">Ekranın daha soluğunu gösteremedi, gerçek değerin daha iyi olabilir.</span>':''}`,b<1.65);addResult('kont|'+eye,'Kontrast ('+eye+')',b,'logCS',s)}};
+
+// ================= NEFES =================
+T.tut=()=>{view('Nefes Tutma',`<div class="card"><label>Tür <select id="tmode"><option value="max">Derin nefes al, tut (maksimum)</option><option value="bolt">Normal nefes ver, burnunu tut (BOLT)</option></select></label>
+<p class="mut">Oturarak, dinlenmiş halde yap. Maksimumda zorlamadan, rahatsızlık hissedince bırak. BOLT'ta ilk belirgin nefes ihtiyacında bırak.</p><div class="center"><div id="tclk" class="clk">0.0</div><button class="b big" id="tbtn">BAŞLA</button></div></div><div id="tres"></div>`);
+let t0=0,iv=null;cleanup.push(()=>clearInterval(iv));
+$('#tbtn').onclick=()=>{if(!t0){t0=performance.now();$('#tbtn').textContent='BIRAKTIM';iv=setInterval(()=>$('#tclk').textContent=((performance.now()-t0)/1000).toFixed(1),100);return}
+clearInterval(iv);const s=r1((performance.now()-t0)/1000);t0=0;$('#tclk').textContent=s.toFixed(1);$('#tbtn').textContent='TEKRAR';const m=$('#tmode').value;let msg,w;
+if(m==='max'){msg=s<30?'Düşük.':s<60?'Orta.':s<90?'İyi.':'Çok iyi.';w=s<30}else{msg=s<10?'Düşük – nefes kontrolü zayıf.':s<20?'Orta.':s<40?'İyi.':'Çok iyi.';w=s<10}
+const nm=m==='max'?'Nefes tutma (max)':'BOLT';$('#tres').innerHTML=box(`<b>${nm}: ${s} sn</b> – ${msg}`,w);addResult('tut_'+m,nm,s,'sn',s+' sn')}};
+
+T.ufle=()=>{view('Üfleme Testi',`<div class="card"><p>Mikrofonu ağzından <b>10 cm</b> uzakta tut (her seferinde aynı). "Başla"ya bas, 2 sn sessiz bekle. "ÜFLE!" yazınca derin nefes al, <b>tek seferde olabildiğince güçlü ve sonuna kadar</b> üfle. 3 deneme yap.</p><button class="b" id="ugo">Başla</button></div>
+<div class="card center"><div id="umsg" style="font-size:28px;font-weight:700"></div><canvas id="ucv" width="600" height="160" style="width:100%"></canvas></div><div id="ures"></div>`);
+const tries=[];let an=null;
+$('#ugo').onclick=async()=>{const dead=token();if(!an){try{an=await mic()}catch(e){$('#ures').innerHTML=box('Mikrofon açılamadı: '+e.message,1);return}}
+$('#ugo').disabled=true;const buf=new Float32Array(an.fftSize),cv=$('#ucv'),cx=cv.getContext('2d');
+$('#umsg').textContent='Sessiz bekle...';const b=[];let t=performance.now();while(performance.now()-t<2000){b.push(rms(an,buf));await sleep(20);if(dead())return}const base=Math.max(med(b),1e-4);
+$('#umsg').textContent='ÜFLE!';const data=[];let started=null;t=performance.now();
+while(performance.now()-t<12000){const v=rms(an,buf),now=performance.now();if(!started&&v>base*6)started=now;if(started)data.push([(now-started)/1000,v]);
+const pk=Math.max(...data.map(d=>d[1]),base*6);cx.clearRect(0,0,600,160);cx.strokeStyle='#1f6feb';cx.lineWidth=2;cx.beginPath();data.forEach((d,i)=>{const x=d[0]/8*600,y=155-d[1]/pk*150;i?cx.lineTo(x,y):cx.moveTo(x,y)});cx.stroke();
+if(started&&now-started>1500&&data.slice(-15).every(d=>d[1]<base*3))break;await sleep(16);if(dead())return}
+$('#ugo').disabled=false;$('#umsg').textContent='';
+if(!data.length){$('#ures').innerHTML=box('Üfleme algılanmadı. Mikrofona daha yakın üfle.',1);return}
+const pk=Math.max(...data.map(d=>d[1]));let tot=0,f1=0,dur=0;for(let i=1;i<data.length;i++){const dt=data[i][0]-data[i-1][0],v=Math.max(0,data[i][1]-base);if(data[i][1]>base*3){tot+=v*dt;dur=data[i][0];if(data[i][0]<=1)f1+=v*dt}}
+tries.push({db:r1(20*Math.log10(pk/base)),dur:r1(dur),ratio:Math.round(tot?f1/tot*100:0)});const bst=tries.reduce((a,c)=>c.db>a.db?c:a);
+$('#ugo').textContent=`Tekrar (${tries.length}/3)`;
+const w=bst.ratio<60&&bst.dur>6;$('#ures').innerHTML=`<div class="card"><table><tr><th>#</th><th>Güç (dB)</th><th>Süre (sn)</th><th>1. sn oranı</th></tr>${tries.map((x,i)=>`<tr><td>${i+1}</td><td>${x.db}</td><td>${x.dur}</td><td>%${x.ratio}</td></tr>`).join('')}</table>`+
+box(`En iyi: güç ${bst.db} dB, süre ${bst.dur} sn, ilk saniyede %${bst.ratio}.<br>${w?'Hava çıkışı yavaş ve uzun — tıkayıcı (astım/KOAH tipi) paterni olabilir. Göğüs hastalıklarında spirometri yaptır.':'Belirgin yavaş akış paterni yok.'}<br><span class="mut">Değerler görecelidir; aynı cihaz ve mesafeyle tekrarlayıp zaman içindeki düşüşü takip et.</span>`,w)+
+`<button class="b ok" id="usave">En iyiyi kaydet</button></div>`;$('#usave').onclick=()=>{addResult('ufle','Üfleme testi',bst.db,'dB',`Güç ${bst.db} dB, süre ${bst.dur} sn, 1. sn %${bst.ratio}`);$('#usave').disabled=true;$('#usave').textContent='Kaydedildi'}}};
+
+T.sol=()=>{view('Solunum Sayısı',`<div class="card"><p>Otur, 2 dk dinlen. Normal nefes al; her <b>nefes alışında</b> butona bas. 60 sn sürer. (Başkası sayarsa daha doğru olur.)</p><div class="center"><div id="sclk" class="clk">60</div><div id="scnt" style="font-size:28px">0 nefes</div><button class="b big" id="sbtn">BAŞLA</button></div></div><div id="sres"></div>`);
+let n=0,t0=0,iv=null;cleanup.push(()=>clearInterval(iv));
+$('#sbtn').onclick=()=>{if(!t0){t0=performance.now();n=0;$('#sbtn').textContent='NEFES';iv=setInterval(()=>{const r=60-(performance.now()-t0)/1000;$('#sclk').textContent=Math.max(0,Math.ceil(r));if(r<=0){clearInterval(iv);t0=0;$('#sbtn').textContent='TEKRAR';beep(660,0.3);
+const msg=n<10?'Düşük.':n<=20?'Normal (12–20).':n<=24?'Biraz yüksek.':'Yüksek — dinlenmişken bu kadar hızlıysa doktora danış.';$('#sres').innerHTML=box(`<b>${n} nefes/dk</b> – ${msg}`,n<10||n>20);addResult('sol','Solunum sayısı',n,'/dk',n+' /dk')}},200);return}
+n++;$('#scnt').textContent=n+' nefes'}};
+
+T.say=()=>{view('Tek Nefeste Sayma',`<div class="card"><p>Derin nefes al, sonra metronom hızında (saniyede 2) yüksek sesle "1, 2, 3..." diye say. Nefesin bitince kaça kadar geldiğini yaz.</p>
+<button class="b g" id="mtr">Metronom aç/kapa</button><label>Ulaştığın sayı <input id="sn" type="number"></label><button class="b ok" id="ssave">Kaydet</button><div id="sres"></div></div>`);
+let iv=null;cleanup.push(()=>clearInterval(iv));$('#mtr').onclick=()=>{if(iv){clearInterval(iv);iv=null}else iv=setInterval(()=>beep(1000,0.04),500)};
+$('#ssave').onclick=()=>{const n=+$('#sn').value;if(!n)return;const msg=n>=30?'İyi.':n>=20?'Orta.':'Düşük — nefes kapasitesi zayıf olabilir; nefes darlığın da varsa doktora git.';$('#sres').innerHTML=box(`<b>${n}</b> – ${msg}`,n<20);addResult('say','Tek nefeste sayma',n,'',''+n)}};
+
+// ================= KALP =================
+function estBpm(s){if(s.length<90)return null;const fs=30,t0=s[0][0],n=Math.floor((s[s.length-1][0]-t0)*fs),x=new Float64Array(n);let j=0;
+for(let i=0;i<n;i++){const t=t0+i/fs;while(j<s.length-2&&s[j+1][0]<t)j++;const a=s[j],b=s[j+1],f=Math.min(1,Math.max(0,(t-a[0])/((b[0]-a[0])||1)));x[i]=a[1]+(b[1]-a[1])*f}
+const pre=new Float64Array(n+1);for(let i=0;i<n;i++)pre[i+1]=pre[i]+x[i];const y=new Float64Array(n);
+for(let i=0;i<n;i++){const a=Math.max(0,i-15),b=Math.min(n,i+15);y[i]=x[i]-(pre[b]-pre[a])/(b-a)}
+let r0=0;for(let i=0;i<n;i++)r0+=y[i]*y[i];r0=r0||1;const ac2=L=>{let s=0;for(let i=0;i+L<n;i++)s+=y[i]*y[i+L];return s/(r0*(n-L)/n)};
+let best=-9,bl=0;const L0=Math.floor(fs*60/190),L1=Math.ceil(fs*60/40);for(let L=L0;L<=L1;L++){const v=ac2(L);if(v>best){best=v;bl=L}}
+const a=ac2(bl-1),b=ac2(bl),c=ac2(bl+1),dn=a-2*b+c,off=dn?0.5*(a-c)/dn:0;return{bpm:60*fs/(bl+Math.max(-0.5,Math.min(0.5,off))),q:best}}
+function hrMsg(b){return b<50?'Düşük (bradikardi aralığı). Sporcu değilsen ve baş dönmesi varsa doktora git.':b<=100?'Normal dinlenme aralığı (50–100).':'Yüksek (taşikardi aralığı). Dinlenmişken devam ediyorsa doktora git.'}
+T.nabizcam=()=>{view('Nabız (Kamera)',`<div class="card"><p><b>Telefonda:</b> işaret parmağının ucunu arka kamera ve flaşın üstüne hafifçe koy (bastırma). <b>Bilgisayarda:</b> parmağı webcam'e koy, arkadan parlak bir fener tut. 25 sn kıpırdama.</p><button class="b" id="cgo">Başla</button></div>
+<div class="card center"><div id="cmsg" style="font-size:22px;font-weight:700"></div><canvas id="ccv" width="600" height="150" style="width:100%"></canvas><video id="cvid" playsinline muted style="width:2px;height:2px;opacity:0;position:absolute"></video></div><div id="cres"></div>`);
+$('#cgo').onclick=async()=>{const dead=token();let st;try{st=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:320},height:{ideal:240}}})}catch(e){$('#cres').innerHTML=box('Kamera açılamadı: '+e.message,1);return}
+cleanup.push(()=>st.getTracks().forEach(t=>t.stop()));$('#cgo').disabled=true;const tr=st.getVideoTracks()[0];try{await tr.applyConstraints({advanced:[{torch:true}]})}catch(e){}
+const v=$('#cvid');v.srcObject=st;await v.play();const k=document.createElement('canvas');k.width=40;k.height=30;const kc=k.getContext('2d',{willReadFrequently:true});const smp=[],t0=performance.now(),cv=$('#ccv'),cx=cv.getContext('2d');
+while(performance.now()-t0<25000){kc.drawImage(v,0,0,40,30);const d=kc.getImageData(0,0,40,30).data;let r=0,g=0;for(let i=0;i<d.length;i+=4){r+=d[i];g+=d[i+1]}r/=1200;g/=1200;const t=(performance.now()-t0)/1000;
+const good=r>90&&r>g*1.4;if(t>3)smp.push([t,r]);$('#cmsg').textContent=good?`Ölçülüyor... ${Math.ceil(25-t)} sn`:'Parmağı kameraya tam kapat!';
+const w=smp.slice(-150);if(w.length>2){const mn=Math.min(...w.map(a=>a[1])),mx=Math.max(...w.map(a=>a[1]))||1;cx.clearRect(0,0,600,150);cx.strokeStyle='#c62828';cx.lineWidth=2;cx.beginPath();w.forEach((a,i)=>{const x=i*4,y=140-(a[1]-mn)/((mx-mn)||1)*130;i?cx.lineTo(x,y):cx.moveTo(x,y)});cx.stroke()}
+await new Promise(r=>requestAnimationFrame(r));if(dead())return}
+st.getTracks().forEach(t=>t.stop());$('#cgo').disabled=false;$('#cmsg').textContent='';const e=estBpm(smp);
+if(!e||e.q<0.3){$('#cres').innerHTML=box('Sinyal zayıf, ölçüm güvenilmez. Parmağı hafifçe, tam kapatarak ve kıpırdamadan tekrar dene.',1);return}
+const b=Math.round(e.bpm);$('#cres').innerHTML=box(`<b>Nabız: ${b} atım/dk</b> (sinyal kalitesi %${Math.round(e.q*100)})<br>${hrMsg(b)}`,b<50||b>100);addResult('nabiz','Nabız',b,'/dk',b+' /dk (kamera)')}};
+T.nabiztap=()=>{view('Nabız (Dokunarak)',`<div class="card"><p>Bileğinden ya da boynundan nabzını bul. Her atışta butona dokun. 20 dokunuş yeterli.</p><div class="center"><div id="hclk" class="clk">–</div><button class="b big r" id="hbtn">ATIŞ</button><br><button class="b g" id="hrst">Sıfırla</button></div></div><div id="hres"></div>`);
+let ts=[];$('#hrst').onclick=()=>{ts=[];$('#hclk').textContent='–';$('#hres').innerHTML=''};
+$('#hbtn').onpointerdown=e=>{e.preventDefault();ts.push(performance.now());if(ts.length<3)return;const iv=[];for(let i=1;i<ts.length;i++)iv.push(ts[i]-ts[i-1]);const b=Math.round(60000/med(iv.slice(-15)));$('#hclk').textContent=b;
+if(ts.length===20){$('#hres').innerHTML=box(`<b>Nabız: ${b} atım/dk</b><br>${hrMsg(b)}`,b<50||b>100);addResult('nabiz','Nabız',b,'/dk',b+' /dk (dokunma)')}}};
+T.step=()=>{view('3 Dakika Basamak Testi',`<div class="card"><p>~30 cm basamak (merdiven) kullan. Her bipte bir adım: <b>sağ yukarı, sol yukarı, sağ aşağı, sol aşağı</b>. 3 dk sürer. Bitince hemen otur; 5 sn sonra 1 dakikalık nabız sayımı başlar (bip ile başlar, bip ile biter). Kalp hastalığın varsa ya da göğüs ağrısı/baş dönmesi olursa dur.</p>
+<div class="center"><div id="pclk" class="clk">3:00</div><div id="pmsg" style="font-size:20px"></div><button class="b big" id="pgo">BAŞLA</button></div><div id="pin" style="display:none"><label>1 dakikada saydığın nabız <input id="pn" type="number"></label><button class="b ok" id="psave">Değerlendir</button></div></div><div id="pres"></div>`);
+let iv=null,iv2=null;cleanup.push(()=>{clearInterval(iv);clearInterval(iv2)});
+$('#pgo').onclick=async()=>{const dead=token();$('#pgo').disabled=true;const t0=performance.now();iv=setInterval(()=>beep(900,0.05),625);
+while(true){const r=180-(performance.now()-t0)/1000;if(r<=0)break;$('#pclk').textContent=Math.floor(r/60)+':'+String(Math.floor(r%60)).padStart(2,'0');await sleep(200);if(dead())return}
+clearInterval(iv);beep(500,0.6);$('#pmsg').textContent='OTUR! 5 sn sonra say...';await sleep(5000);if(dead())return;beep(1200,0.3);$('#pmsg').textContent='NABZINI SAY';const t1=performance.now();
+while(true){const r=60-(performance.now()-t1)/1000;if(r<=0)break;$('#pclk').textContent=Math.ceil(r);await sleep(200);if(dead())return}
+beep(1200,0.6);$('#pmsg').textContent='Bitti';$('#pin').style.display='block';$('#pgo').disabled=false};
+$('#psave').onclick=()=>{const n=+$('#pn').value;if(!n)return;const k=S.sex==='K'?6:0;const msg=n<=84+k?'Çok iyi kondisyon.':n<=99+k?'İyi.':n<=110+k?'Orta.':n<=120+k?'Zayıf.':'Çok zayıf.';$('#pres').innerHTML=box(`<b>Toparlanma nabzı: ${n}/dk</b> – ${msg}`,n>110+k);addResult('step','Basamak testi',n,'/dk',n+' /dk – '+msg)}};
+T.orto=()=>{view('Yatma–Ayakta Nabız',`<div class="card"><p>5 dk sırtüstü yat, nabzını ölç (dokunarak nabız testini kullanabilirsin). Sonra ayağa kalk; 1. ve 3. dakikada tekrar ölç. Tansiyon aletin varsa onu da gir.</p>
+<label>Yatarken nabız <input id="o1" type="number"></label><label>Ayakta 1. dk nabız <input id="o2" type="number"></label><label>Ayakta 3. dk nabız <input id="o3" type="number"></label>
+<label>Yatarken büyük tansiyon (ops.) <input id="o4" type="number"></label><label>Ayakta büyük tansiyon (ops.) <input id="o5" type="number"></label><label><input type="checkbox" id="o6"> Ayağa kalkınca baş dönmesi/kararma oldu</label><button class="b ok" id="osave">Değerlendir</button><div id="ores"></div></div>`);
+$('#osave').onclick=()=>{const a=+$('#o1').value,b=Math.max(+$('#o2').value||0,+$('#o3').value||0),s1=+$('#o4').value,s2=+$('#o5').value;if(!a||!b)return;const d=b-a,n=[];
+if(d>=30||b>=120)n.push(`Ayağa kalkınca nabız ${d} artmış — ortostatik taşikardi paterni`);if(s1&&s2&&s1-s2>=20)n.push(`Büyük tansiyon ${s1-s2} mmHg düşmüş — ortostatik hipotansiyon paterni`);if($('#o6').checked)n.push('Baş dönmesi var');
+const s=`Nabız artışı +${d}/dk`+(s1&&s2?`, tansiyon farkı ${s1-s2} mmHg`:'');$('#ores').innerHTML=box('<b>'+s+'</b><br>'+(n.length?n.join('<br>')+'<br>Sık tekrarlıyorsa doktora danış (sıvı alımı, ilaçlar, kalp ritmi değerlendirilmeli).':'Normal sınırlarda.'),n.length);addResult('orto','Ortostatik',d,'/dk',s)}};
+
+// ================= MOTOR =================
+T.tepki=()=>{view('Tepki Süresi',`<div class="card"><p>Kutu <b>yeşile</b> dönünce olabildiğince hızlı dokun (veya boşluk). Erken basarsan sayılmaz. 7 deneme.</p><div id="rt" style="background:#475569">Başlamak için dokun</div><p id="rinf" class="mut"></p></div><div id="rres"></div>`);
+const dead=token(),el=$('#rt');let st='idle',tGo=0,tm=null,times=[],early=0;cleanup.push(()=>clearTimeout(tm));
+const next=()=>{if(dead())return;st='wait';el.style.background='#c62828';el.textContent='Bekle...';tm=setTimeout(()=>{st='go';el.style.background='#1a7f37';el.textContent='BAS!';tGo=performance.now()},1500+Math.random()*2500)};
+const fin=()=>{const m=Math.round(med(times));const msg=m<250?'Hızlı.':m<350?'Normal.':m<450?'Biraz yavaş (yorgunluk, uykusuzluk etkiler).':'Yavaş. Sürekli böyleyse doktora danış.';
+$('#rres').innerHTML=box(`<b>Ortanca tepki: ${m} ms</b> – ${msg}${early?` (${early} erken basış)`:''}<br><span class="mut">Dokunmatik ekran/fare 30–80 ms gecikme ekler; aynı cihazla takip et.</span>`,m>=450);addResult('tepki','Tepki süresi',m,'ms',m+' ms');el.style.background='#475569';el.textContent='Tekrar için dokun'};
+const hit=()=>{if(st==='idle'){times=[];early=0;$('#rres').innerHTML='';next()}else if(st==='wait'){clearTimeout(tm);early++;st='pause';el.style.background='#b54708';el.textContent='Erken! Bekle...';setTimeout(next,1200)}
+else if(st==='go'){const d=performance.now()-tGo;times.push(d);$('#rinf').textContent=times.map(Math.round).join(' · ')+' ms';if(times.length>=7){st='idle';fin()}else{st='pause';el.style.background='#475569';el.textContent=Math.round(d)+' ms';setTimeout(next,900)}}};
+el.onpointerdown=e=>{e.preventDefault();hit()};const kh=e=>{if(e.code==='Space'){e.preventDefault();hit()}};document.addEventListener('keydown',kh);cleanup.push(()=>document.removeEventListener('keydown',kh))};
+
+T.secmeli=()=>{view('Seçmeli Tepki',`<div class="card"><p>Ok hangi yönü gösterirse o taraftaki butona bas (klavyede ← →). 12 deneme.</p><div class="center"><div id="cs" style="font-size:90px;height:120px">·</div><button class="b big" id="cl" style="min-width:140px">◀ SOL</button><button class="b big" id="cr" style="min-width:140px">SAĞ ▶</button><br><button class="b g" id="cgo">Başla</button></div></div><div id="cres"></div>`);
+let resolver=null;const ans=v=>resolver&&resolver(v);$('#cl').onpointerdown=e=>{e.preventDefault();ans(0)};$('#cr').onpointerdown=e=>{e.preventDefault();ans(1)};
+const kh=e=>{if(e.key==='ArrowLeft')ans(0);if(e.key==='ArrowRight')ans(1)};document.addEventListener('keydown',kh);cleanup.push(()=>document.removeEventListener('keydown',kh));
+$('#cgo').onclick=async()=>{const dead=token();$('#cgo').disabled=true;const rt=[];let err=0;
+for(let i=0;i<12;i++){$('#cs').textContent='·';let pre=false;resolver=()=>pre=true;await sleep(1000+Math.random()*1500);if(dead())return;const d=Math.random()<0.5?0:1;$('#cs').textContent=d?'▶':'◀';const t0=performance.now();
+const a=await new Promise(r=>resolver=r);resolver=null;if(dead())return;if(a===d&&!pre)rt.push(performance.now()-t0);else err++}
+$('#cs').textContent='✓';$('#cgo').disabled=false;const m=Math.round(med(rt));const s=`Ortanca ${m} ms, ${err} hata`;
+$('#cres').innerHTML=box(`<b>${s}</b><br>${m<400?'Normal.':m<550?'Biraz yavaş.':'Yavaş.'} ${err>2?'Hata sayısı yüksek, dikkat dağınıklığı olabilir.':''}`,m>=550||err>2);addResult('secmeli','Seçmeli tepki',m,'ms',s)}};
+
+T.vurus=()=>{view('Parmak Vuruş Hızı',`<div class="card">${handSel('vh')}<p>İşaret parmağınla butona 10 sn boyunca olabildiğince hızlı vur. İlk dokunuşta süre başlar. Her iki el için yap.</p><div class="center"><div id="vclk" class="clk">10.0</div><div id="vn" style="font-size:28px">0</div><button class="b big" id="vb" style="height:160px">VUR</button><br><button class="b g" id="vr">Sıfırla</button></div></div><div id="vres"></div>`);
+let n=0,t0=0,done=false,iv=null;const H={};cleanup.push(()=>clearInterval(iv));const reset=()=>{n=0;t0=0;done=false;clearInterval(iv);$('#vclk').textContent='10.0';$('#vn').textContent='0'};$('#vr').onclick=reset;$('#vh').onchange=reset;
+$('#vb').onpointerdown=e=>{e.preventDefault();if(done)return;if(!t0){t0=performance.now();iv=setInterval(()=>{const r=10-(performance.now()-t0)/1000;$('#vclk').textContent=Math.max(0,r).toFixed(1);if(r<=0){clearInterval(iv);done=true;beep(600,0.3);const h=$('#vh').value;H[h]=n;addResult('vurus|'+h,'Parmak vuruş ('+h+')',n,'/10sn',h+': '+n);
+let msg=`${h}: <b>${n}</b> vuruş / 10 sn`;if(H['Sağ el']&&H['Sol el']){const a=H['Sağ el'],b=H['Sol el'],asy=Math.round(Math.abs(a-b)/Math.max(a,b)*100);msg+=`<br>Sağ ${a} / Sol ${b} – fark %${asy}. ${asy>20?'Eller arası fark belirgin; dominant el farkını aşıyorsa nöroloji değerlendirmesi düşünülebilir.':'Eller dengeli.'}`}
+$('#vres').innerHTML=box(msg)}},100)}n++;$('#vn').textContent=n}};
+
+T.spiral=()=>{view('Spiral Çizme',`<div class="card">${handSel('ph')}<p>Gri spirali <b>merkezden başlayıp dışarı doğru</b>, parmağını/fareyi kaldırmadan, çizginin üstünden izle. Bitince "Bitir".</p><div class="center"><canvas id="pcv"></canvas><br><button class="b ok" id="pfin">Bitir</button><button class="b g" id="pclr">Temizle</button></div></div><div id="pres"></div>`);
+const W=Math.min(340,app.clientWidth-40),cv=$('#pcv'),c=setupCanvas(cv,W,W),TH=6*Math.PI,B=(W/2-15)/TH,sp=[];for(let i=0;i<=900;i++){const t=i/900*TH;sp.push([W/2+B*t*Math.cos(t),W/2+B*t*Math.sin(t)])}
+let pts=[],down=false;const draw=()=>{c.fillStyle='#fff';c.fillRect(0,0,W,W);c.strokeStyle='#bbb';c.lineWidth=3;c.beginPath();sp.forEach((p,i)=>i?c.lineTo(p[0],p[1]):c.moveTo(p[0],p[1]));c.stroke();c.strokeStyle='#1f6feb';c.lineWidth=2;c.beginPath();pts.forEach((p,i)=>i?c.lineTo(p[0],p[1]):c.moveTo(p[0],p[1]));c.stroke()};draw();
+const pos=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left)*W/r.width,(e.clientY-r.top)*W/r.height]};
+cv.onpointerdown=e=>{down=true;cv.setPointerCapture(e.pointerId);pts.push(pos(e));draw()};cv.onpointermove=e=>{if(down){pts.push(pos(e));draw()}};cv.onpointerup=()=>down=false;$('#pclr').onclick=()=>{pts=[];draw()};
+$('#pfin').onclick=()=>{if(pts.length<30)return;let dev=0;for(const p of pts){let m=1e9;for(const q of sp){const d=(p[0]-q[0])**2+(p[1]-q[1])**2;if(d<m)m=d}dev+=Math.sqrt(m)}dev/=pts.length;
+let jit=0;for(let i=1;i<pts.length-1;i++)jit+=Math.hypot(pts[i+1][0]-2*pts[i][0]+pts[i-1][0],pts[i+1][1]-2*pts[i][1]+pts[i-1][1]);jit/=pts.length-2;
+const maxR=Math.max(...pts.map(p=>Math.hypot(p[0]-W/2,p[1]-W/2))),cover=maxR/(W/2-15);const sc=cv.getBoundingClientRect().width/W,mm=r1(dev*sc/pxmm()),h=$('#ph').value;
+const msg=mm<1.5?'İyi, titreme belirgin değil.':mm<3?'Orta sapma.':'Belirgin sapma/titreme. Sürekliyse (kahve, uykusuzluk dışında) nöroloji değerlendirmesi düşünülebilir.';
+const s=`${h}: ortalama sapma ${mm} mm, titreşim indeksi ${r1(jit*sc/pxmm()*10)/10}`;$('#pres').innerHTML=box(`<b>${s}</b><br>${msg}${cover<0.8?'<br><span class="mut">Spiralin tamamını izlemedin, sonuç eksik.</span>':''}`,mm>=3);addResult('spiral|'+h,'Spiral ('+h+')',mm,'mm',s)}};
+
+T.denge=()=>{view('Tek Ayak Denge',`<div class="card"><label>Gözler <select id="de"><option>Açık</option><option>Kapalı</option></select></label><p>Ayakkabısız ol, yakında tutunacak bir şey olsun. Telefonu iki elle göğsünde tut (sensör sallanmayı ölçer). Başla'ya bas, bipten sonra tek ayağını kaldır. Ayak yere değince / tutununca / gözünü açınca "BİTTİ"ye bas. En fazla 60 sn.</p>
+<div class="center"><div id="dclk" class="clk">0.0</div><button class="b big" id="dgo">BAŞLA</button></div></div><div id="dres"></div>`);
+let st=0,t0=0,acc=[],iv=null;const mh=e=>{const a=e.accelerationIncludingGravity;if(st===2&&a&&a.x!=null)acc.push([a.x,a.y,a.z])};window.addEventListener('devicemotion',mh);cleanup.push(()=>{window.removeEventListener('devicemotion',mh);clearInterval(iv)});
+const fin=()=>{clearInterval(iv);st=0;beep(500,0.4);const s=r1(Math.min(60,(performance.now()-t0)/1000));$('#dgo').textContent='TEKRAR';$('#dclk').textContent=s.toFixed(1);const eo=$('#de').value==='Açık',age=+S.age||40;
+const nr=eo?(age<40?43:age<50?40:age<60?37:age<70?27:15):(age<40?15:age<50?13:age<60?8:age<70?4:2);let sway='';
+if(acc.length>20){const m=[0,1,2].map(k=>mean(acc.map(a=>a[k])));const sd=Math.sqrt(mean(acc.map(a=>(a[0]-m[0])**2+(a[1]-m[1])**2+(a[2]-m[2])**2)));sway=`, sallanma ${sd.toFixed(2)} m/s²`}
+const sum=`Göz ${eo?'açık':'kapalı'}: ${s} sn${sway}`;$('#dres').innerHTML=box(`<b>${sum}</b><br>Yaşın için tipik: ~${nr} sn. ${s>=nr?'Normal veya üstü.':'Tipikten düşük; düşme riski/denge sorunu açısından takip et, belirgin düşükse doktora danış.'}`,s<nr*0.6);addResult('denge_'+(eo?'a':'k'),'Denge (göz '+(eo?'açık':'kapalı')+')',s,'sn',sum)};
+$('#dgo').onclick=async()=>{if(st===2){fin();return}if(st===1)return;const dead=token();
+if(window.DeviceMotionEvent&&typeof DeviceMotionEvent.requestPermission==='function'){try{await DeviceMotionEvent.requestPermission()}catch(e){}}
+st=1;acc=[];$('#dgo').textContent='...';for(let i=3;i>0;i--){$('#dclk').textContent=i;beep(700,0.1);await sleep(1000);if(dead())return}beep(1200,0.3);st=2;t0=performance.now();$('#dgo').textContent='BİTTİ';
+iv=setInterval(()=>{const s=(performance.now()-t0)/1000;$('#dclk').textContent=s.toFixed(1);if(s>=60)fin()},100)}};
+
+// ================= BİLİŞSEL =================
+T.span=()=>{view('Rakam Dizisi',`<div class="card"><p>Rakamlar birer birer gösterilecek. Bitince aynı sırayla yaz. 3 haneden başlar, her hanede 2 hakkın var.</p><div class="center"><div id="sd" class="clk" style="font-size:90px;height:120px"></div><input id="sa" inputmode="numeric" style="font-size:28px;width:260px;text-align:center;display:none"><button class="b" id="sok" style="display:none">Tamam</button><br><button class="b g" id="sgo">Başla</button></div></div><div id="sres"></div>`);
+$('#sgo').onclick=async()=>{const dead=token();$('#sgo').style.display='none';let len=3,best=0;
+while(len<=12){let pass=false;for(let tr=0;tr<2&&!pass;tr++){const q=[];while(q.length<len){const d=Math.floor(Math.random()*10);if(d!==q[q.length-1])q.push(d)}
+$('#sa').style.display='none';$('#sok').style.display='none';$('#sd').textContent='Hazır';await sleep(900);for(const d of q){$('#sd').textContent=d;await sleep(800);$('#sd').textContent='';await sleep(250);if(dead())return}
+$('#sd').textContent='?';$('#sa').value='';$('#sa').style.display='inline-block';$('#sok').style.display='inline-block';$('#sa').focus();
+const a=await new Promise(r=>{$('#sok').onclick=()=>r($('#sa').value);$('#sa').onkeydown=e=>{if(e.key==='Enter')r($('#sa').value)}});if(dead())return;pass=a.replace(/\D/g,'')===q.join('');$('#sd').textContent=pass?'✓':'✗';await sleep(600)}
+if(!pass)break;best=len;len++}
+$('#sa').style.display='none';$('#sok').style.display='none';$('#sgo').style.display='inline-block';$('#sgo').textContent='Tekrar';$('#sd').textContent=best;
+const msg=best>=7?'İyi.':best>=5?'Normal.':'Düşük. Yorgunluk/dikkat etkiler; sürekliyse değerlendirme önerilir.';$('#sres').innerHTML=box(`<b>Rakam dizisi: ${best}</b> – ${msg}`,best<5);addResult('span','Rakam dizisi',best,'hane',''+best)}};
+
+T.corsi=()=>{view('Kutu Dizisi',`<div class="card"><p>Kutular sırayla yanacak. Bitince aynı sırayla dokun. 2 kutudan başlar, her seviyede 2 hak.</p><div id="cb" style="position:relative;width:300px;height:300px;margin:auto;background:#1d2430;border-radius:12px"></div><p class="center" id="cinf"></p><div class="center"><button class="b g" id="cgo">Başla</button></div></div><div id="cres"></div>`);
+const pos=[[20,30],[130,15],[230,40],[60,120],[170,110],[240,150],[25,220],[120,200],[210,235]];$('#cb').innerHTML=pos.map((p,i)=>`<div data-i="${i}" style="position:absolute;left:${p[0]}px;top:${p[1]}px;width:50px;height:50px;background:#3b82f6;border-radius:8px;cursor:pointer"></div>`).join('');
+const bx=[...app.querySelectorAll('[data-i]')];const fl=(i,ms)=>{bx[i].style.background='#facc15';return sleep(ms).then(()=>bx[i].style.background='#3b82f6')};let tapR=null;bx.forEach((b,i)=>b.onpointerdown=e=>{e.preventDefault();if(tapR){fl(i,200);tapR(i)}});
+$('#cgo').onclick=async()=>{const dead=token();$('#cgo').disabled=true;let len=2,best=0;
+while(len<=9){let pass=false;for(let tr=0;tr<2&&!pass;tr++){const q=[];while(q.length<len){const d=Math.floor(Math.random()*9);if(!q.includes(d))q.push(d)}$('#cinf').textContent='İzle...';await sleep(800);
+for(const i of q){await fl(i,700);await sleep(250);if(dead())return}$('#cinf').textContent='Sıra sende';const a=[];
+await new Promise(r=>{tapR=i=>{a.push(i);if(a.length===len){tapR=null;r()}}});if(dead())return;pass=a.join()===q.join();$('#cinf').textContent=pass?'✓ Doğru':'✗ Yanlış';await sleep(800)}
+if(!pass)break;best=len;len++}
+$('#cgo').disabled=false;$('#cgo').textContent='Tekrar';const msg=best>=6?'İyi.':best>=4?'Normal.':'Düşük.';$('#cres').innerHTML=box(`<b>Görsel hafıza: ${best}</b> – ${msg}`,best<4);addResult('corsi','Kutu dizisi',best,'',''+best)}};
+
+T.stroop=()=>{const SC=[['KIRMIZI','#d32f2f'],['MAVİ','#1565c0'],['YEŞİL','#2e7d32'],['SARI','#e6a800']];
+view('Stroop Testi',`<div class="card"><p>Ekranda renk isimleri çıkacak. Kelimeyi <b>okuma</b>, yazının <b>rengini</b> seç. Hızlı ve doğru ol. 24 deneme. (Klavye: 1-4)</p><div class="center"><div id="sw" style="font-size:54px;font-weight:800;height:80px"></div>${SC.map((c,i)=>`<button class="b" data-c="${i}" style="background:#fff;color:#111;border:3px solid ${c[1]}">${i+1}. ${c[0]}</button>`).join('')}<br><button class="b g" id="sgo">Başla</button></div></div><div id="sres"></div>`);
+let resolver=null;app.querySelectorAll('[data-c]').forEach(b=>b.onpointerdown=e=>{e.preventDefault();resolver&&resolver(+b.dataset.c)});const kh=e=>{const n=+e.key;if(n>=1&&n<=4&&resolver)resolver(n-1)};document.addEventListener('keydown',kh);cleanup.push(()=>document.removeEventListener('keydown',kh));
+$('#sgo').onclick=async()=>{const dead=token();$('#sgo').disabled=true;const con=[],inc=[];let err=0;
+for(let i=0;i<24;i++){$('#sw').textContent='+';$('#sw').style.color='#111';await sleep(500);if(dead())return;const w=Math.floor(Math.random()*4),cg=i%2===0;let c=w;if(!cg)while(c===w)c=Math.floor(Math.random()*4);
+$('#sw').textContent=SC[w][0];$('#sw').style.color=SC[c][1];const t0=performance.now();const a=await new Promise(r=>resolver=r);resolver=null;if(dead())return;const rt=performance.now()-t0;if(a===c)(cg?con:inc).push(rt);else err++}
+$('#sw').textContent='';$('#sgo').disabled=false;const mc=Math.round(med(con)),mi=Math.round(med(inc)),ef=mi-mc;const s=`Uyumlu ${mc} ms, uyumsuz ${mi} ms, Stroop etkisi ${ef} ms, ${err} hata`;
+$('#sres').innerHTML=box(`<b>${s}</b><br>${ef<150?'Dikkat/ketleme iyi.':ef<250?'Normal.':'Stroop etkisi yüksek; yorgunluk veya dikkat sorunu olabilir.'}${err>3?' Hata sayısı yüksek.':''}`,ef>=250||err>3);addResult('stroop','Stroop etkisi',ef,'ms',s)}};
+
+T.trail=()=>{view('İz Sürme A/B',`<div class="card"><p><b>A:</b> 1→2→3... sırayla dokun. <b>B:</b> rakam ve harf sırayla değişerek: 1→A→2→B→3→C... Hızlı ama hatasız. Yanlış dokunuş kırmızı yanar.</p><div class="center"><canvas id="tcv"></canvas><p id="tinf" style="font-size:20px"></p><button class="b" id="tgo">A bölümünü başlat</button></div></div><div id="tres"></div>`);
+const W=Math.min(380,app.clientWidth-40),H=Math.round(W*1.15),cv=$('#tcv'),c=setupCanvas(cv,W,H),R=17;const res={};
+const layout=()=>{const p=[];let g=0;while(p.length<16&&g<5000){g++;const x=R+4+Math.random()*(W-2*R-8),y=R+4+Math.random()*(H-2*R-8);if(p.every(q=>Math.hypot(q[0]-x,q[1]-y)>2.6*R))p.push([x,y])}return p};
+let P=[],labels=[],idx=0,t0=0,err=0,part='A',bad=-1;
+const draw=()=>{c.fillStyle='#fff';c.fillRect(0,0,W,H);c.strokeStyle='#1f6feb';c.lineWidth=2;c.beginPath();for(let i=0;i<idx;i++)i?c.lineTo(P[i][0],P[i][1]):c.moveTo(P[i][0],P[i][1]);c.stroke();
+P.forEach((p,i)=>{c.fillStyle=i<idx?'#bbf7d0':i===bad?'#fecaca':'#f1f5f9';c.strokeStyle='#334155';c.beginPath();c.arc(p[0],p[1],R,0,7);c.fill();c.stroke();c.fillStyle='#111';c.font='bold 15px sans-serif';c.textAlign='center';c.textBaseline='middle';c.fillText(labels[i],p[0],p[1])})};
+const start=pt=>{part=pt;P=layout();labels=pt==='A'?[...Array(16)].map((_,i)=>String(i+1)):[...Array(16)].map((_,i)=>i%2?'ABCDEFGH'[i>>1]:String((i>>1)+1));idx=0;err=0;bad=-1;t0=performance.now();draw();$('#tgo').style.display='none';$('#tinf').textContent='Bölüm '+pt};
+cv.onpointerdown=e=>{if(!P.length||idx>=16)return;const r=cv.getBoundingClientRect(),x=(e.clientX-r.left)*W/r.width,y=(e.clientY-r.top)*H/r.height;const h=P.findIndex(p=>Math.hypot(p[0]-x,p[1]-y)<=R+4);if(h<0)return;
+if(h===idx){idx++;bad=-1;draw();if(idx===16){const t=r1((performance.now()-t0)/1000);res[part]={t,err};if(part==='A'){$('#tinf').textContent=`A: ${t} sn, ${err} hata`;$('#tgo').textContent='B bölümünü başlat';$('#tgo').style.display='inline-block'}else fin()}}else if(h>=idx){err++;bad=h;draw()}};
+$('#tgo').onclick=()=>start(res.A?'B':'A');
+const fin=()=>{const a=res.A,b=res.B,ra=r1(b.t/a.t);const s=`A ${a.t} sn (${a.err} hata), B ${b.t} sn (${b.err} hata), B/A ${ra}`;$('#tinf').textContent='';
+$('#tres').innerHTML=box(`<b>${s}</b><br>${ra<2.5?'Zihinsel esneklik normal.':ra<3?'Sınırda.':'B/A oranı yüksek; dikkat değiştirmede zorlanma. Sürekliyse değerlendirme önerilir.'}`,ra>=3);addResult('trail','İz sürme B/A',ra,'oran',s);delete res.A;delete res.B;$('#tgo').textContent='Tekrar (A)';$('#tgo').style.display='inline-block'}};
+
+// ================= VÜCUT / KAYIT =================
+T.vki=()=>{view('Vücut Ölçüleri',`<div class="card"><label>Boy (cm) <input id="vb" type="number" value="${S.height||''}"></label><label>Kilo (kg) <input id="vk" type="number" value="${S.weight||''}"></label><label>Bel çevresi (cm, göbek hizası) <input id="vbel" type="number"></label><label>Kalça çevresi (cm) <input id="vkal" type="number"></label>
+<label>Yaş <input id="vy" type="number" value="${S.age||''}"></label><label>Cinsiyet <select id="vs"><option value="E">Erkek</option><option value="K">Kadın</option></select></label><button class="b ok" id="vgo">Hesapla</button><div id="vres"></div></div>`);
+$('#vs').value=S.sex||'E';$('#vgo').onclick=()=>{const h=+$('#vb').value,w=+$('#vk').value,bel=+$('#vbel').value,kal=+$('#vkal').value,y=+$('#vy').value,sx=$('#vs').value;if(!h||!w)return;
+const m=h/100,bmi=r1(w/(m*m));const cat=bmi<18.5?'Zayıf':bmi<25?'Normal':bmi<30?'Fazla kilolu':bmi<35?'Obez (1. derece)':'Obez (2+. derece)';const rows=[`VKİ: <b>${bmi}</b> – ${cat}`,`Sağlıklı kilo aralığı: ${r1(18.5*m*m)}–${r1(24.9*m*m)} kg`];let w2=bmi>=30||bmi<18.5;
+if(bel){const wh=Math.round(bel/h*100)/100;rows.push(`Bel/boy: <b>${wh}</b> – ${wh<0.5?'iyi':wh<0.6?'artmış risk':'yüksek risk'}`);if(wh>=0.6)w2=true}
+if(bel&&kal){const wk=Math.round(bel/kal*100)/100,lim=sx==='K'?0.85:0.90;rows.push(`Bel/kalça: <b>${wk}</b> – ${wk<lim?'normal':'karın bölgesi yağlanması (metabolik risk)'}`)}
+if(y){const bmr=Math.round(10*w+6.25*h-5*y+(sx==='K'?-161:5));rows.push(`Bazal metabolizma: ~${bmr} kcal/gün (hareketsiz günlük ~${Math.round(bmr*1.2)}, orta aktif ~${Math.round(bmr*1.55)})`)}
+$('#vres').innerHTML=box(rows.join('<br>'),w2);S.height=h;S.weight=w;saveS();addResult('vki','VKİ',bmi,'',`VKİ ${bmi} (${cat}), ${w} kg`+(bel?`, bel ${bel} cm`:''))}};
+
+T.manuel=()=>{view('Manuel Ölçüm Kaydı',`<div class="card"><p class="mut">Tansiyon aleti, şeker ölçer, oksimetre, termometre ile ölçtüğün değerleri gir. Boş bıraktıkların kaydedilmez.</p>
+<label>Tansiyon büyük / küçük <input id="m1" type="number" style="width:90px"> / <input id="m2" type="number" style="width:90px"></label><label>Açlık şekeri (mg/dL) <input id="m3" type="number"></label><label>Tokluk şekeri, yemekten 2 sa sonra (mg/dL) <input id="m4" type="number"></label>
+<label>SpO2 (%) <input id="m5" type="number"></label><label>Ateş (°C) <input id="m6" type="number" step="0.1"></label><button class="b ok" id="msave">Kaydet</button><div id="mres"></div></div>`);
+$('#msave').onclick=()=>{const g=id=>+$('#'+id).value,out=[];let w=false;const add=(k,n,v,u,s,bad)=>{addResult(k,n,v,u,s);out.push(s);if(bad)w=true};
+const sy=g('m1'),di=g('m2');if(sy&&di){const c=sy>=180||di>=120?'ÇOK YÜKSEK – acil değerlendirme':sy>=140||di>=90?'yüksek':sy>=130||di>=80?'sınırda yüksek':sy<90||di<60?'düşük':'normal';add('tansiyon','Tansiyon (büyük)',sy,'mmHg',`Tansiyon ${sy}/${di} – ${c}`,c!=='normal')}
+const a=g('m3');if(a){const c=a<70?'düşük (hipoglisemi)':a<100?'normal':a<126?'bozulmuş açlık şekeri':'diyabet aralığı – doktora git';add('aclik','Açlık şekeri',a,'mg/dL',`Açlık şekeri ${a} – ${c}`,c!=='normal')}
+const t=g('m4');if(t){const c=t<140?'normal':t<200?'bozulmuş glukoz toleransı':'yüksek – doktora git';add('tok','Tokluk şekeri',t,'mg/dL',`Tokluk şekeri ${t} – ${c}`,c!=='normal')}
+const o=g('m5');if(o){const c=o>=95?'normal':o>=90?'düşük':'ÇOK DÜŞÜK – acil değerlendirme';add('spo2','SpO2',o,'%',`SpO2 %${o} – ${c}`,c!=='normal')}
+const f=g('m6');if(f){const c=f<35.5?'düşük':f<37.5?'normal':f<38?'hafif yüksek':f<39.5?'ateş':'yüksek ateş';add('ates','Ateş',f,'°C',`Ateş ${f} °C – ${c}`,c!=='normal')}
+$('#mres').innerHTML=out.length?box(out.join('<br>'),w):''}};
+
+// ================= GEÇMİŞ =================
+function delRes(i){const R=store.get('st_res',[]);R.splice(i,1);store.set('st_res',R);T.gecmis()}
+T.gecmis=()=>{const R=store.get('st_res',[]);const keys=[...new Set(R.filter(r=>typeof r.value==='number').map(r=>r.key))];
+view('Geçmiş ve Rapor',`<div class="card"><b>${S.name||'İsimsiz'}</b> ${S.age?'– '+S.age+' yaş':''} – Rapor tarihi: ${new Date().toLocaleDateString('tr-TR')}<br>
+<button class="b g" onclick="window.print()">Yazdır / PDF</button><button class="b g" id="hexp">Yedek indir</button><label class="b g" style="display:inline-block">Yedek yükle<input type="file" id="himp" accept=".json" style="display:none"></label><button class="b r" id="hdel">Hepsini sil</button></div>
+${keys.length?`<div class="card"><label>Grafik <select id="hsel">${keys.map(k=>`<option value="${k}">${R.filter(r=>r.key===k).pop().name}</option>`).join('')}</select></label><canvas id="hcv" width="700" height="260" style="width:100%"></canvas></div>`:''}
+<div class="card">${R.length?`<table><tr><th>Tarih</th><th>Test</th><th>Sonuç</th><th></th></tr>${R.map((r,i)=>[r,i]).reverse().map(([r,i])=>`<tr><td>${new Date(r.date).toLocaleString('tr-TR',{dateStyle:'short',timeStyle:'short'})}</td><td>${r.name}</td><td>${r.summary}</td><td><button class="b g" style="padding:4px 9px" onclick="delRes(${i})">✕</button></td></tr>`).join('')}</table>`:'Henüz sonuç yok.'}</div>`);
+const drawH=()=>{const k=$('#hsel').value,d=R.filter(r=>r.key===k&&typeof r.value==='number');chart($('#hcv'),d.map(r=>new Date(r.date).toLocaleDateString('tr-TR',{day:'2-digit',month:'2-digit'})),[{name:d[0].name+(d[0].unit?' ('+d[0].unit+')':''),color:'#1f6feb',data:d.map(r=>r.value)}])};
+if(keys.length){$('#hsel').onchange=drawH;drawH()}
+$('#hexp').onclick=()=>{const b=new Blob([JSON.stringify({settings:S,results:R},null,1)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='saglik_yedek_'+new Date().toISOString().slice(0,10)+'.json';a.click()};
+$('#himp').onchange=e=>{const f=e.target.files[0];if(!f)return;const fr=new FileReader();fr.onload=()=>{try{const d=JSON.parse(fr.result);if(d.settings){S=d.settings;saveS()}if(d.results)store.set('st_res',d.results);T.gecmis()}catch(err){alert('Dosya okunamadı')}};fr.readAsText(f)};
+$('#hdel').onclick=()=>{if(confirm('Tüm sonuçlar silinsin mi?')){store.set('st_res',[]);T.gecmis()}}};
+
+home();
+if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
