@@ -303,17 +303,21 @@ const a=ac2(bl-1),b=ac2(bl),c=ac2(bl+1),dn=a-2*b+c,off=dn?0.5*(a-c)/dn:0;return{
 function hrMsg(b){return b<50?'Düşük (bradikardi aralığı). Sporcu değilsen ve baş dönmesi varsa doktora git.':b<=100?'Normal dinlenme aralığı (50–100).':'Yüksek (taşikardi aralığı). Dinlenmişken devam ediyorsa doktora git.'}
 T.nabizcam=()=>{view('Nabız (Kamera)',`<div class="card"><p><b>Telefonda:</b> işaret parmağının ucunu arka kamera ve flaşın üstüne hafifçe koy (bastırma). <b>Bilgisayarda:</b> parmağı webcam'e koy, arkadan parlak bir fener tut. 25 sn kıpırdama.</p><button class="b" id="cgo">Başla</button></div>
 <div class="card center"><div id="cmsg" style="font-size:22px;font-weight:700"></div><canvas id="ccv" width="600" height="150" style="width:100%"></canvas><video id="cvid" playsinline muted style="width:2px;height:2px;opacity:0;position:absolute"></video></div><div id="cres"></div>`);
-$('#cgo').onclick=async()=>{const dead=token();let st,tr;
-const torchOn=async t=>{try{const c=t.getCapabilities?t.getCapabilities():{};if(c.torch===false)return false;await t.applyConstraints({advanced:[{torch:true}]});await sleep(300);const s2=t.getSettings?t.getSettings():{};return s2.torch===true||!!c.torch}catch(e){return false}};
+$('#cgo').onclick=async()=>{const dead=token();let st=null,tr,flas=false,info=[];
+const stop=()=>{if(st){st.getTracks().forEach(t=>t.stop());st=null}};cleanup.push(stop);
+const torchOn=async t=>{try{await t.applyConstraints({advanced:[{torch:true}]});await sleep(400);const s2=t.getSettings?t.getSettings():{};return s2.torch!==false}catch(e){return false}};
 const open=async id=>navigator.mediaDevices.getUserMedia({video:id?{deviceId:{exact:id}}:{facingMode:{ideal:'environment'}}});
-try{st=await open()}catch(e){$('#cres').innerHTML=box('Kamera açılamadı: '+e.message,1);return}
-cleanup.push(()=>{if(st)st.getTracks().forEach(t=>t.stop())});$('#cgo').disabled=true;$('#cmsg').textContent='Flaş açılıyor...';
-const v=$('#cvid');v.srcObject=st;await v.play();tr=st.getVideoTracks()[0];let flas=await torchOn(tr);
-if(!flas){try{const cams=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput'&&d.deviceId!==(tr.getSettings().deviceId||''));
-for(const c of cams){if(/front|ön|user|selfie/i.test(c.label))continue;let s2;try{s2=await open(c.deviceId)}catch(e){continue}
-const t2=s2.getVideoTracks()[0],cap=t2.getCapabilities?t2.getCapabilities():{};if(cap.torch){st.getTracks().forEach(t=>t.stop());st=s2;tr=t2;v.srcObject=st;await v.play();flas=await torchOn(tr);if(flas)break}else s2.getTracks().forEach(t=>t.stop())}}catch(e){}}
-if(dead())return;
-if(!flas){$('#cmsg').textContent='';$('#cres').innerHTML=box('Telefon flaşı bu tarayıcıdan açılamadı. Parmağını kameraya koyup arkasına başka bir telefonun fenerini ya da parlak bir lamba tut, ölçüm öyle de olur. Daha kolayı: <b>Nabız (dokunarak)</b> testi.',1)}
+const v=$('#cvid');$('#cgo').disabled=true;$('#cmsg').textContent='Kamera ve fener aranıyor...';
+try{st=await open()}catch(e){$('#cres').innerHTML=box('Kamera açılamadı: '+e.message,1);$('#cgo').disabled=false;return}
+const first=st.getVideoTracks()[0].getSettings().deviceId;
+const tryTrack=async()=>{tr=st.getVideoTracks()[0];v.srcObject=st;try{await v.play()}catch(e){}const cap=tr.getCapabilities?tr.getCapabilities():{};info.push((tr.label||'kamera')+': fener '+(cap.torch?'var':'yok'));return cap.torch?await torchOn(tr):false};
+flas=await tryTrack();
+if(!flas){let cams=[];try{cams=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput'&&d.deviceId&&d.deviceId!==first&&!/front|ön|user|selfie/i.test(d.label))}catch(e){}
+for(const c of cams){stop();await sleep(300);try{st=await open(c.deviceId)}catch(e){info.push((c.label||'kamera')+': açılamadı');continue}flas=await tryTrack();if(flas)break}
+if(!flas){stop();await sleep(300);try{st=await open(first?first:undefined)}catch(e){try{st=await open()}catch(e2){}}if(st)await tryTrack()}}
+if(dead())return;if(!st){$('#cres').innerHTML=box('Kamera açılamadı.',1);$('#cgo').disabled=false;return}
+const diag='<div class="mut" style="font-size:12px;margin-top:6px">'+info.map(x=>x.replace(/[<>]/g,'')).join('<br>')+'</div>';
+if(!flas){$('#cmsg').textContent='';$('#cres').innerHTML=box('Telefon feneri bu tarayıcıdan açılamadı. Parmağını arka kameraya koyup arkasına başka bir fener ya da parlak lamba tut, ölçüm öyle de olur. Daha kolayı: <b>Nabız (dokunarak)</b>.'+diag,1)}
 const k=document.createElement('canvas');k.width=40;k.height=30;const kc=k.getContext('2d',{willReadFrequently:true});const smp=[],t0=performance.now(),cv=$('#ccv'),cx=cv.getContext('2d');
 while(performance.now()-t0<25000){kc.drawImage(v,0,0,40,30);const d=kc.getImageData(0,0,40,30).data;let r=0,g=0;for(let i=0;i<d.length;i+=4){r+=d[i];g+=d[i+1]}r/=1200;g/=1200;const t=(performance.now()-t0)/1000;
 const good=r>90&&r>g*1.4;if(t>3)smp.push([t,r]);$('#cmsg').textContent=good?`Ölçülüyor... ${Math.ceil(25-t)} sn`:'Parmağı kameraya tam kapat!';
